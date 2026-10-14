@@ -16,6 +16,8 @@ from tokenizer import CharTokenizer
 
 def add_training_args(parser: argparse.ArgumentParser, *, lr: float, block_size: int, out: str) -> None:
     parser.add_argument("--styles", nargs="+", default=["rhymes"])
+    parser.add_argument("--style-weights", nargs="+", type=float,
+                        help="sampling weight per style, in --styles order; defaults to dataset sizes")
     parser.add_argument("--data", type=Path, default=Path("data/tokens"))
     parser.add_argument("--out", type=Path, default=Path(out))
     parser.add_argument("--steps", type=int, default=3000)
@@ -34,8 +36,14 @@ def add_training_args(parser: argparse.ArgumentParser, *, lr: float, block_size:
 def prepare(args: argparse.Namespace) -> tuple[CharTokenizer, dict[str, TokenStream]]:
     torch.manual_seed(args.seed)
     tok = CharTokenizer.load(args.data / "tokenizer.json")
-    streams = {split: TokenStream(args.data, args.styles, split) for split in ("train", "val")}
+    streams = {split: TokenStream(args.data, args.styles, split, args.style_weights)
+               for split in ("train", "val")}
+    if len(args.styles) > 1:
+        streams |= {f"val_{style}": TokenStream(args.data, [style], "val") for style in args.styles}
+
     print(f"Train tokens: {len(streams['train']):,}  Val tokens: {len(streams['val']):,}")
+    mix = ", ".join(f"{s} {w:.0%}" for s, w in zip(args.styles, streams["train"].mix))
+    print(f"Batch mix: {mix}")
     return tok, streams
 
 
@@ -58,6 +66,8 @@ def estimate_loss(model: nn.Module, streams: dict[str, TokenStream], args: argpa
             total += model(x, y)[1].item()
         losses[split] = total / args.eval_iters
     model.train()
+    if len(args.styles) == 1:
+        losses[f"val_{args.styles[0]}"] = losses["val"]
     return losses
 
 
@@ -66,6 +76,10 @@ def plot_losses(history: list[dict], best_step: int, path: Path) -> None:
     plt.figure(figsize=(8, 5))
     plt.plot(steps, [h["train"] for h in history], label="train")
     plt.plot(steps, [h["val"] for h in history], label="val")
+    style_keys = [k for k in history[0] if k.startswith("val_")]
+    if len(style_keys) > 1:
+        for key in style_keys:
+            plt.plot(steps, [h[key] for h in history], linestyle=":", label=key)
     plt.axvline(best_step, color="gray", linestyle="--", label=f"best val (step {best_step})")
     plt.xlabel("step")
     plt.ylabel("cross-entropy loss")
@@ -94,8 +108,8 @@ def train(model: nn.Module, model_name: str, model_config: dict, tok: CharTokeni
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
     print(f"Model: {model_name}, {sum(p.numel() for p in model.parameters()):,} parameters\n")
 
-    prompt = f"<|{args.styles[0]}|>"
-    print("Sample before training:\n" + generate(model, tok, prompt, 200, 1.0, args.device) + "\n")
+    untrained = generate(model, tok, f"<|{args.styles[0]}|>", 200, 1.0, args.device)
+    print(f"Sample before training:\n{untrained}\n")
 
     history = []
     best_val, best_step = float("inf"), 0
@@ -109,8 +123,9 @@ def train(model: nn.Module, model_name: str, model_config: dict, tok: CharTokeni
             if improved:
                 best_val, best_step = losses["val"], step
                 save_checkpoint(model, model_name, model_config, args, step, best_val)
+            per_style = "  ".join(f"{k[4:]} {v:.3f}" for k, v in losses.items() if k.startswith("val_"))
             print(f"step {step:>6}  train {losses['train']:.4f}  val {losses['val']:.4f}  "
-                  f"lr {lr:.2e}  ({time.time() - start:.0f}s){'  *' if improved else ''}")
+                  f"[{per_style}]  lr {lr:.2e}  ({time.time() - start:.0f}s){'  *' if improved else ''}")
         if step == args.steps:
             break
 
@@ -128,5 +143,7 @@ def train(model: nn.Module, model_name: str, model_config: dict, tok: CharTokeni
 
     model.load_state_dict(torch.load(args.out / "model.pt", weights_only=True)["model"])
     print(f"\nBest val loss {best_val:.4f} at step {best_step} (* marks each new best)")
-    print("\nSample from best checkpoint:\n" + generate(model, tok, prompt, 300, 1.0, args.device))
+    for style in args.styles:
+        print(f"\nSample from best checkpoint ({style}):\n"
+              + generate(model, tok, f"<|{style}|>", 300, 1.0, args.device))
     print(f"\nSaved checkpoint, history and loss plot to {args.out}/")

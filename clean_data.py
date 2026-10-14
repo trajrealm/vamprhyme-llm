@@ -9,6 +9,7 @@ from pathlib import Path
 STYLES = ("rhymes", "horror", "bridge")
 VERSE_ONLY = {"rhymes"}
 PROSE_LINE_LEN = 55
+LIST_MIN_LINES = 8
 
 # Per-file cut points for leftover front/back matter.
 ANCHORS: dict[str, dict[str, str]] = {
@@ -68,7 +69,13 @@ def is_noise(lines: list[str]) -> bool:
         or (len(lines) == 1 and bool(CHAPTER.match(lines[0])))
         or bool(EDITORIAL.match(lines[0]))
         or sum(bool(PAGE_REF.search(line)) for line in lines) > len(lines) / 2
+        or is_title_list(lines)
     )
+
+
+def is_title_list(lines: list[str]) -> bool:
+    # Contents pages and first-line indexes without page numbers: many lines, few ending in punctuation.
+    return len(lines) >= LIST_MIN_LINES and sum(line[-1].isalpha() for line in lines) > 0.8 * len(lines)
 
 
 def is_prose(lines: list[str], style: str) -> bool:
