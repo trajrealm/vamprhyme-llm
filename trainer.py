@@ -1,6 +1,7 @@
 """Training loop, evaluation and checkpointing shared by all models."""
 import argparse
 import json
+import math
 import time
 from pathlib import Path
 
@@ -21,6 +22,8 @@ def add_training_args(parser: argparse.ArgumentParser, *, lr: float, block_size:
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--block-size", type=int, default=block_size)
     parser.add_argument("--lr", type=float, default=lr)
+    parser.add_argument("--warmup-steps", type=int, default=100)
+    parser.add_argument("--min-lr-ratio", type=float, default=0.1)
     parser.add_argument("--grad-clip", type=float, default=1.0)
     parser.add_argument("--eval-every", type=int, default=250)
     parser.add_argument("--eval-iters", type=int, default=100)
@@ -34,6 +37,14 @@ def prepare(args: argparse.Namespace) -> tuple[CharTokenizer, dict[str, TokenStr
     streams = {split: TokenStream(args.data, args.styles, split) for split in ("train", "val")}
     print(f"Train tokens: {len(streams['train']):,}  Val tokens: {len(streams['val']):,}")
     return tok, streams
+
+
+def lr_at(step: int, args: argparse.Namespace) -> float:
+    if step < args.warmup_steps:
+        return args.lr * (step + 1) / args.warmup_steps
+    progress = (step - args.warmup_steps) / max(1, args.steps - args.warmup_steps)
+    min_lr = args.lr * args.min_lr_ratio
+    return min_lr + 0.5 * (args.lr - min_lr) * (1 + math.cos(math.pi * progress))
 
 
 @torch.no_grad()
@@ -50,17 +61,30 @@ def estimate_loss(model: nn.Module, streams: dict[str, TokenStream], args: argpa
     return losses
 
 
-def plot_losses(history: list[dict], path: Path) -> None:
+def plot_losses(history: list[dict], best_step: int, path: Path) -> None:
     steps = [h["step"] for h in history]
     plt.figure(figsize=(8, 5))
     plt.plot(steps, [h["train"] for h in history], label="train")
     plt.plot(steps, [h["val"] for h in history], label="val")
+    plt.axvline(best_step, color="gray", linestyle="--", label=f"best val (step {best_step})")
     plt.xlabel("step")
     plt.ylabel("cross-entropy loss")
     plt.legend()
     plt.grid(alpha=0.3)
     plt.savefig(path, dpi=120, bbox_inches="tight")
     plt.close()
+
+
+def save_checkpoint(model: nn.Module, model_name: str, model_config: dict,
+                    args: argparse.Namespace, step: int, val_loss: float) -> None:
+    torch.save({
+        "model": model.state_dict(),
+        "model_name": model_name,
+        "model_config": model_config,
+        "tokenizer_path": str(args.data / "tokenizer.json"),
+        "step": step,
+        "val_loss": val_loss,
+    }, args.out / "model.pt")
 
 
 def train(model: nn.Module, model_name: str, model_config: dict, tok: CharTokenizer,
@@ -74,16 +98,24 @@ def train(model: nn.Module, model_name: str, model_config: dict, tok: CharTokeni
     print("Sample before training:\n" + generate(model, tok, prompt, 200, 1.0, args.device) + "\n")
 
     history = []
+    best_val, best_step = float("inf"), 0
     start = time.time()
     for step in range(args.steps + 1):
+        lr = lr_at(step, args)
         if step % args.eval_every == 0:
             losses = estimate_loss(model, streams, args)
-            history.append({"step": step, **losses})
+            history.append({"step": step, "lr": lr, **losses})
+            improved = losses["val"] < best_val
+            if improved:
+                best_val, best_step = losses["val"], step
+                save_checkpoint(model, model_name, model_config, args, step, best_val)
             print(f"step {step:>6}  train {losses['train']:.4f}  val {losses['val']:.4f}  "
-                  f"({time.time() - start:.0f}s)")
+                  f"lr {lr:.2e}  ({time.time() - start:.0f}s){'  *' if improved else ''}")
         if step == args.steps:
             break
 
+        for group in optimizer.param_groups:
+            group["lr"] = lr
         x, y = streams["train"].batch(args.batch_size, args.block_size, args.device)
         _, loss = model(x, y)
         optimizer.zero_grad(set_to_none=True)
@@ -91,14 +123,10 @@ def train(model: nn.Module, model_name: str, model_config: dict, tok: CharTokeni
         nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
         optimizer.step()
 
-    torch.save({
-        "model": model.state_dict(),
-        "model_name": model_name,
-        "model_config": model_config,
-        "tokenizer_path": str(args.data / "tokenizer.json"),
-    }, args.out / "model.pt")
     (args.out / "history.json").write_text(json.dumps(history, indent=2))
-    plot_losses(history, args.out / "loss.png")
+    plot_losses(history, best_step, args.out / "loss.png")
 
-    print("\nSample after training:\n" + generate(model, tok, prompt, 300, 1.0, args.device))
+    model.load_state_dict(torch.load(args.out / "model.pt", weights_only=True)["model"])
+    print(f"\nBest val loss {best_val:.4f} at step {best_step} (* marks each new best)")
+    print("\nSample from best checkpoint:\n" + generate(model, tok, prompt, 300, 1.0, args.device))
     print(f"\nSaved checkpoint, history and loss plot to {args.out}/")
