@@ -119,6 +119,7 @@ def train(model: nn.Module, model_name: str, model_config: dict, tok: CharTokeni
         if step % args.eval_every == 0:
             losses = estimate_loss(model, streams, args)
             history.append({"step": step, "lr": lr, **losses})
+            (args.out / "history.json").write_text(json.dumps(history, indent=2))
             improved = losses["val"] < best_val
             if improved:
                 best_val, best_step = losses["val"], step
@@ -138,7 +139,6 @@ def train(model: nn.Module, model_name: str, model_config: dict, tok: CharTokeni
         nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
         optimizer.step()
 
-    (args.out / "history.json").write_text(json.dumps(history, indent=2))
     plot_losses(history, best_step, args.out / "loss.png")
 
     model.load_state_dict(torch.load(args.out / "model.pt", weights_only=True)["model"])
