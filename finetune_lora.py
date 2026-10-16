@@ -88,11 +88,13 @@ def main(args: argparse.Namespace) -> None:
     for example in load_examples(args.data / "val.jsonl", tokenizer, args.max_len):
         val_by_style[example["style"]].append(example)
 
-    args.steps = args.steps or math.ceil(args.epochs * len(train) / args.batch_size)
+    args.steps = args.steps or math.ceil(args.epochs * len(train) / (args.batch_size * args.grad_accum))
     print(f"{len(train):,} training examples, {sum(map(len, val_by_style.values())):,} validation, "
-          f"{args.steps:,} steps")
+          f"{args.steps:,} steps of {args.batch_size} x {args.grad_accum} examples")
 
-    model = AutoModelForCausalLM.from_pretrained(args.model, dtype=torch.float32).to(args.device)
+    # Frozen base weights in fp16 on GPU; peft keeps the trainable adapter weights in fp32.
+    dtype = torch.float16 if args.device == "cuda" else torch.float32
+    model = AutoModelForCausalLM.from_pretrained(args.model, dtype=dtype).to(args.device)
     model.config.use_cache = False
     model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
     lora = LoraConfig(r=args.lora_r, lora_alpha=args.lora_alpha, lora_dropout=args.lora_dropout,
@@ -106,7 +108,7 @@ def main(args: argparse.Namespace) -> None:
     history, running = [], []
     best_val, best_step = float("inf"), 0
     start = time.time()
-    batches = train_batches(train, args.batch_size, args.steps, rng)
+    batches = train_batches(train, args.batch_size, args.steps * args.grad_accum, rng)
     for step in range(args.steps + 1):
         lr = lr_at(step, args)
         if step % args.eval_every == 0 or step == args.steps:
@@ -127,15 +129,18 @@ def main(args: argparse.Namespace) -> None:
 
         for group in optimizer.param_groups:
             group["lr"] = lr
-        with torch.autocast(args.device, dtype=torch.float16, enabled=args.device == "cuda"):
-            loss = model(**collate(next(batches), pad_id, args.device)).loss
         optimizer.zero_grad(set_to_none=True)
-        scaler.scale(loss).backward()
+        step_loss = 0.0
+        for _ in range(args.grad_accum):
+            with torch.autocast(args.device, dtype=torch.float16, enabled=args.device == "cuda"):
+                loss = model(**collate(next(batches), pad_id, args.device)).loss / args.grad_accum
+            scaler.scale(loss).backward()
+            step_loss += loss.item()
         scaler.unscale_(optimizer)
         torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
         scaler.step(optimizer)
         scaler.update()
-        running.append(loss.item())
+        running.append(step_loss)
 
     plot_losses(history, best_step, args.out / "loss.png")
     print(f"\nBest val loss {best_val:.4f} at step {best_step}; adapter saved to {args.out / 'adapter'}")
@@ -155,7 +160,8 @@ if __name__ == "__main__":
     parser.add_argument("--out", type=Path, default=Path("runs/lora"))
     parser.add_argument("--epochs", type=float, default=1.0)
     parser.add_argument("--steps", type=int, help="overrides --epochs")
-    parser.add_argument("--batch-size", type=int, default=8)
+    parser.add_argument("--batch-size", type=int, default=4, help="examples per forward pass")
+    parser.add_argument("--grad-accum", type=int, default=2, help="forward passes per optimizer step")
     parser.add_argument("--max-len", type=int, default=512)
     parser.add_argument("--lr", type=float, default=2e-4)
     parser.add_argument("--warmup-steps", type=int, default=30)
