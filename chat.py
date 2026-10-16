@@ -6,6 +6,8 @@ import torch
 from peft import PeftConfig, PeftModel
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
+from finetune_data import SYSTEM_PROMPT
+
 DEFAULT_MODEL = "Qwen/Qwen2.5-1.5B-Instruct"
 
 
@@ -21,9 +23,11 @@ def load(base: str | None, adapter: Path | None, device: str):
 
 
 @torch.no_grad()
-def reply(model, tokenizer, prompt: str, max_new_tokens: int, temperature: float, device: str) -> str:
-    text = tokenizer.apply_chat_template([{"role": "user", "content": prompt}],
-                                         tokenize=False, add_generation_prompt=True)
+def reply(model, tokenizer, prompt: str, max_new_tokens: int, temperature: float, device: str,
+          system: str | None = SYSTEM_PROMPT) -> str:
+    messages = [{"role": "system", "content": system}] if system else []
+    messages.append({"role": "user", "content": prompt})
+    text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
     inputs = tokenizer(text, return_tensors="pt", add_special_tokens=False).to(device)
     output = model.generate(**inputs, max_new_tokens=max_new_tokens, do_sample=True,
                             temperature=temperature, top_p=0.9, pad_token_id=tokenizer.pad_token_id)
@@ -33,7 +37,7 @@ def reply(model, tokenizer, prompt: str, max_new_tokens: int, temperature: float
 def respond(model, tokenizer, prompt: str, args: argparse.Namespace) -> None:
     def run(label: str) -> None:
         torch.manual_seed(args.seed)
-        text = reply(model, tokenizer, prompt, args.max_new_tokens, args.temperature, args.device)
+        text = reply(model, tokenizer, prompt, args.max_new_tokens, args.temperature, args.device, args.system)
         print(f"\n=== {label} ===\n{text}")
 
     if args.adapter and args.compare:
@@ -68,6 +72,8 @@ if __name__ == "__main__":
     parser.add_argument("--base", help=f"base model; defaults to the adapter's base or {DEFAULT_MODEL}")
     parser.add_argument("--adapter", type=Path, help="LoRA adapter folder from finetune_lora.py")
     parser.add_argument("--compare", action="store_true", help="also answer with the adapter switched off")
+    parser.add_argument("--system", default=SYSTEM_PROMPT,
+                        help="system prompt; pass an empty string for the model's own default")
     parser.add_argument("--max-new-tokens", type=int, default=200)
     parser.add_argument("--temperature", type=float, default=0.8)
     parser.add_argument("--seed", type=int, default=0)

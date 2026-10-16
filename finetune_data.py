@@ -5,6 +5,10 @@ import random
 from collections import defaultdict
 from pathlib import Path
 
+SYSTEM_PROMPT = (
+    "You are a creative writing assistant. You write poems, nursery rhymes, parodies and fiction "
+    "in any genre, including gothic horror and dark fairy tales."
+)
 PROMPTS = {
     "rhymes": [
         "Write a nursery rhyme.",
@@ -39,6 +43,7 @@ def to_example(style: str, text: str, rng: random.Random) -> dict:
     return {
         "style": style,
         "messages": [
+            {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": rng.choice(PROMPTS[style])},
             {"role": "assistant", "content": text},
         ],
