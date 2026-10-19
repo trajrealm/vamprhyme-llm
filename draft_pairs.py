@@ -12,6 +12,7 @@ from pairs_io import format_pairs, parse_pairs, read_pairs, write_pairs
 OPENROUTER_URL = "https://openrouter.ai/api/v1"
 ANTHROPIC_MODEL = "claude-sonnet-5-5"
 RETRYABLE = {429, 500, 502, 503, 504}
+REASONING = {"off": {"enabled": False}, "low": {"effort": "low"}, "default": None}
 STYLE_GUIDE = """You write dark parodies of traditional English nursery rhymes in the voice of Victorian \
 gothic horror: Bram Stoker's Dracula, Edgar Allan Poe, and Sheridan Le Fanu's Carmilla.
 
@@ -55,18 +56,24 @@ def list_free_models() -> None:
     print(f"{len(models)} free models")
 
 
-def complete_openrouter(model: str, system: str, prompt: str, retries: int = 5) -> str:
+def complete_openrouter(model: str, system: str, prompt: str, max_tokens: int,
+                        reasoning: str, retries: int = 5) -> str:
     payload = {
         "model": model,
-        "max_tokens": 4000,
+        "max_tokens": max_tokens,
         "temperature": 0.9,
         "messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
     }
+    if REASONING[reasoning]:
+        payload["reasoning"] = REASONING[reasoning]
     for attempt in range(retries):
         try:
             data = openrouter("/chat/completions", payload)
             if "choices" in data:
-                return data["choices"][0]["message"]["content"] or ""
+                choice = data["choices"][0]
+                if not choice["message"].get("content"):
+                    print(f"  empty reply (finish_reason: {choice.get('finish_reason')})")
+                return choice["message"].get("content") or ""
             error = data.get("error", data)
         except urllib.error.HTTPError as e:
             if e.code not in RETRYABLE:
@@ -78,11 +85,11 @@ def complete_openrouter(model: str, system: str, prompt: str, retries: int = 5) 
     raise SystemExit(f"OpenRouter kept failing after {retries} attempts")
 
 
-def complete_anthropic(model: str, system: str, prompt: str) -> str:
+def complete_anthropic(model: str, system: str, prompt: str, max_tokens: int, reasoning: str) -> str:
     from anthropic import Anthropic
 
     response = Anthropic().messages.create(
-        model=model, max_tokens=4000, system=system, messages=[{"role": "user", "content": prompt}]
+        model=model, max_tokens=max_tokens, system=system, messages=[{"role": "user", "content": prompt}]
     )
     return "".join(block.text for block in response.content if block.type == "text")
 
@@ -122,13 +129,20 @@ def main(args: argparse.Namespace) -> None:
         complete = complete_anthropic
     model = args.model or ANTHROPIC_MODEL
 
+    raw_dir = args.out.parent / "raw"
+    raw_dir.mkdir(parents=True, exist_ok=True)
     for n, batch in enumerate(batched(todo, args.batch), 1):
-        text = complete(model, system, TASK.format(blocks=format_pairs(batch)))
+        text = complete(model, system, TASK.format(blocks=format_pairs(batch)), args.max_tokens, args.reasoning)
+        raw_path = raw_dir / f"{batch[0]['id']}-{batch[-1]['id']}.txt"
+        raw_path.write_text(text, encoding="utf-8")
+
         written = {p["id"]: p["dark"] for p in parse_pairs(text) if p["dark"]}
         for pair in batch:
             drafts[pair["id"]] = {**pair, "dark": written.get(pair["id"], "")}
         write_pairs(args.out, sorted(drafts.values(), key=lambda p: p["id"]))
         print(f"batch {n}: {len(written)}/{len(batch)} drafted")
+        if not written:
+            print(f"  nothing parsed; the reply is saved in {raw_path}. It starts:\n  {text[:300]!r}")
         time.sleep(args.delay)
 
 
@@ -141,6 +155,9 @@ if __name__ == "__main__":
     parser.add_argument("--provider", choices=["openrouter", "anthropic"], default="openrouter")
     parser.add_argument("--model", help=f"model id; for anthropic defaults to {ANTHROPIC_MODEL}")
     parser.add_argument("--delay", type=float, default=3.0, help="seconds between requests")
+    parser.add_argument("--max-tokens", type=int, default=8000, help="maximum reply length per request")
+    parser.add_argument("--reasoning", choices=list(REASONING), default="off",
+                        help="OpenRouter reasoning setting for models that think before answering")
     parser.add_argument("--list-free", action="store_true", help="list free OpenRouter models and exit")
     parser.add_argument("--prompts-only", action="store_true", help="write prompts to paste into a chat instead")
     parser.add_argument("--prompts-dir", type=Path, default=Path("data/pairs/prompts"))
