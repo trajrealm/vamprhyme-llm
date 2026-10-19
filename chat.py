@@ -1,5 +1,6 @@
 """Chat with a pretrained model, optionally with a LoRA adapter, and compare the two."""
 import argparse
+import json
 from pathlib import Path
 
 import torch
@@ -49,6 +50,9 @@ def respond(model, tokenizer, prompt: str, args: argparse.Namespace) -> None:
 
 def main(args: argparse.Namespace) -> None:
     model, tokenizer = load(args.base, args.adapter, args.device)
+    if args.prompts_file:
+        with args.prompts_file.open(encoding="utf-8") as f:
+            args.prompts += [json.loads(line)["prompt"] for line in f]
     for prompt in args.prompts:
         print(f"> {prompt}")
         respond(model, tokenizer, prompt, args)
@@ -69,6 +73,7 @@ def main(args: argparse.Namespace) -> None:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("prompts", nargs="*", help="prompts to answer; omit for an interactive session")
+    parser.add_argument("--prompts-file", type=Path, help='JSONL file with a "prompt" field per line')
     parser.add_argument("--base", help=f"base model; defaults to the adapter's base or {DEFAULT_MODEL}")
     parser.add_argument("--adapter", type=Path, help="LoRA adapter folder from finetune_lora.py")
     parser.add_argument("--compare", action="store_true", help="also answer with the adapter switched off")
