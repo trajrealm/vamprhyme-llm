@@ -1,50 +1,68 @@
 # vamprhyme-llm
 
-A from-scratch, character-level GPT language model written in PyTorch, built as a hands-on way to learn how large language models work. The project covers the full pipeline: cleaning a raw text corpus, tokenization, a bigram baseline, a transformer (GPT) implementation, training with validation-based checkpointing, multi-style data mixing, and controllable generation, including blending two writing styles at generation time.
+A hands-on project for learning how large language models work, built around one creative goal: rewriting traditional nursery rhymes as Victorian gothic horror. It covers the full path from a character-level GPT written from scratch in PyTorch to fine-tuning a pretrained 1.5-billion-parameter model with LoRA, and ends with a public demo on Hugging Face.
 
-The reference corpus blends public-domain nursery rhymes with Victorian gothic horror (for example, "Twinkle, Twinkle" meets *Dracula*), but the pipeline works with any plain-text corpus you provide.
+```
+There was an old woman tossed in a basket,      There was an old woman tossed in a coffin,
+Seventeen times as high as the moon;      ->    Seventeen times as low as the grave;
+But where she was going no mortal could tell,   But where she was going no mortal could tell,
+For under her arm she carried a broom.          For under her arm she carried a broom.
+```
+
+*Output of the fine-tuned model on a rhyme held out of training.*
 
 ## What it is for
 
-- Learning LLM fundamentals by running, reading and modifying a compact, complete implementation.
-- Training small language models on your own text and comparing them.
-- Experimenting with model size, learning rate schedules, dropout, data mixing and sampling settings, with loss curves and side-by-side generation to judge the effect.
+- Learning LLM fundamentals by running, reading and modifying a compact, complete implementation: data cleaning, tokenization, attention, training loops, evaluation and sampling.
+- Seeing what scale and pretraining change, by comparing models trained from scratch with a fine-tuned pretrained model on the same task.
+- Learning practical fine-tuning: LoRA, chat templates, loss masking, mixed precision, building a supervised dataset with a larger model's help, and publishing the result.
+- Training small models on your own text: the pipeline works with any plain-text corpus.
 
-The models produced here are small base models trained on a few megabytes of text. They learn spelling, line structure and the surface style of each corpus, but not coherent meaning. They continue text rather than follow instructions. See [Limitations](#limitations).
+## Try it on Hugging Face
 
-## Requirements
+- **Demo:** [huggingface.co/spaces/trajrealm/vamprhyme-demo](https://huggingface.co/spaces/trajrealm/vamprhyme-demo). A Gradio app: enter or pick a rhyme, compare the fine-tuned model with the base model side by side, or browse a gallery of results.
+- **Model:** [huggingface.co/trajrealm/vamprhyme-qwen2.5-1.5b-lora](https://huggingface.co/trajrealm/vamprhyme-qwen2.5-1.5b-lora). The LoRA adapter for [Qwen2.5-1.5B-Instruct](https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct). The model card has loading code, training details and limitations.
 
-- Python 3.10 or later
-- PyTorch, NumPy, Matplotlib
-- Optional: an NVIDIA GPU, or a free cloud GPU such as Google Colab, for larger models
+With this repository, you can also chat with the published adapter directly. It downloads the base model (about 3 GB) on first use and runs on a CPU, slowly, or a GPU:
 
-Training the default model on a laptop CPU takes about 15 to 40 minutes. The larger configuration in step 10 is intended for a GPU.
+```bash
+pip install transformers peft
+python3 chat.py --adapter trajrealm/vamprhyme-qwen2.5-1.5b-lora --compare
+```
+
+Quoting the full rhyme in the request gives the best results, for example: `Write a Dracula version of this nursery rhyme:` followed by the rhyme.
+
+## How it was built
+
+**Phase 1: Data.** Public-domain books from Project Gutenberg in three styles: nursery rhymes, gothic horror, and darkly comic children's writing that mixes the two. They're cleaned into tagged prose and verse units.
+
+**Phase 2: A GPT from scratch.** A character-level tokenizer, a bigram baseline, and a GPT (causal self-attention, multi-head attention, transformer blocks), trained with warmup, cosine decay, gradient clipping and best-checkpoint selection, first on a laptop CPU and then on a Colab GPU. Style tags and weighted data mixing let one model write all three styles, and a log-probability blend mixes two styles at generation time. These models learn spelling, form and style vocabulary, but not meaning, which needs far more text than a few megabytes.
+
+**Phase 3: Fine-tuning a pretrained model.** LoRA on Qwen2.5-1.5B-Instruct. Trained on the corpus alone, the model gained an authentic period voice but recited rhymes instead of transforming them. Trained on rhyme-to-parody pairs (12 hand-written seeds, about 200 drafts by a larger model, all reviewed) mixed with style examples, it transforms rhymes it never saw paired, while keeping their shape.
 
 ## Project structure
 
 | File | Purpose |
 |---|---|
 | `clean_data.py` | Cleans raw text into tagged prose and verse units |
-| `tokenizer.py` | Character-level tokenizer with special tokens |
-| `prepare_tokens.py` | Builds the vocabulary and encodes train and validation splits |
-| `data.py` | Samples training batches, with weighted mixing across styles |
-| `models_bigram.py` | Bigram language model (baseline) |
-| `models_gpt.py` | GPT model: causal self-attention, MLP, transformer blocks |
+| `tokenizer.py`, `prepare_tokens.py` | Character tokenizer; builds the vocabulary and train/validation token arrays |
+| `data.py` | Training batches, with weighted mixing across styles |
+| `models_bigram.py`, `models_gpt.py` | Bigram baseline and GPT model |
 | `trainer.py` | Shared training loop, evaluation, learning rate schedule, checkpointing |
-| `train_bigram.py`, `train_gpt.py` | Training entry points |
-| `check_gpt.py` | Sanity checks for the GPT before a full training run |
-| `sample.py` | Text generation, including style blending |
-| `compare_runs.py` | Compares loss histories across runs |
-| `play.py` | Interactive prompt loop for comparing models side by side |
-| `vamprhyme_colab.ipynb` | Notebook for training on a Google Colab GPU |
-
-Each stage has a detailed walkthrough of its concepts and code: `clean_data.md`, `tokenization.md`, `bigram.md`, `gpt.md`, `training.md`, `mixing.md`, `colab.md` and `play.md`.
-
-The text corpus, encoded token files and training runs are not included in the repository. You supply your own data, and `prepare_tokens.py` regenerates everything under `data/tokens/`, including `tokenizer.json`, from it.
+| `train_bigram.py`, `train_gpt.py`, `check_gpt.py` | Training entry points and pre-training sanity checks |
+| `sample.py`, `play.py`, `compare_runs.py` | Generation and style blending, interactive model comparison, loss comparison |
+| `finetune_data.py` | Turns the corpus into chat-format examples for fine-tuning |
+| `select_rhymes.py`, `draft_pairs.py`, `pairs_io.py`, `build_pair_data.py` | Rhyme-to-parody pair dataset: selection, drafting, file format, assembly |
+| `pairs/seed_pairs.txt` | The 12 hand-written pairs that define the parody style |
+| `finetune_lora.py`, `chat.py` | LoRA fine-tuning; chat with a base model and adapter |
+| `vamprhyme_*.ipynb` | Colab notebooks for the GPU steps |
+| `huggingface/` | The Hugging Face Space app and model card |
 
 ## Getting started
 
-### 1. Clone and set up the environment
+### Requirements
+
+Python 3.10 or later. Phases 1 and 2 need `torch numpy matplotlib`; Phase 3 adds `transformers peft`. Phase 3 training needs a GPU; the notebooks run on Colab's free T4. On an Intel Mac, the newest available PyTorch is 2.2.2, which needs `"numpy<2"`.
 
 ```bash
 git clone https://github.com/YOUR_GITHUB_USERNAME/vamprhyme-llm.git
@@ -54,133 +72,74 @@ source .venv/bin/activate
 pip install torch numpy matplotlib
 ```
 
-On an Intel Mac, the last PyTorch release available is 2.2.2, which requires NumPy below version 2:
+### 1. Add your text
 
-```bash
-pip install torch==2.2.2 "numpy<2" matplotlib
-```
-
-### 2. Add your text
-
-Place UTF-8 `.txt` files in three style folders:
+Corpus files and training runs aren't in the repository. Place UTF-8 `.txt` files in three style folders; each folder name becomes a style tag the model learns:
 
 ```
-data/raw/rhymes/   short verse
+data/raw/rhymes/   short verse (prose in this folder is dropped)
 data/raw/horror/   prose
 data/raw/bridge/   material that mixes the two
 ```
 
-Each folder name becomes a style tag (`<|rhymes|>`, `<|horror|>`, `<|bridge|>`) that the model learns and that you can use to steer generation. A single style is enough to get started, and a folder can be left empty.
+The reference corpus uses Project Gutenberg's plain-text editions of *The Real Mother Goose*, Halliwell's *Nursery Rhymes of England* and Edward Lear (rhymes); *Dracula*, *Carmilla*, *The Vampyre*, Poe, M.R. James and W.W. Jacobs (horror); and *Alice in Wonderland*, *Struwwelpeter*, Belloc's *Cautionary Tales* and Grimms' Fairy Tales (bridge). Gutenberg headers and footers are removed automatically. To use other style names, update `STYLES` in `clean_data.py`, `prepare_tokens.py` and `play.py`, and the style references in `sample.py` and `check_gpt.py`.
 
-The reference corpus uses public-domain books from [Project Gutenberg](https://www.gutenberg.org) (choose "Plain Text UTF-8"):
-
-- **rhymes:** *The Real Mother Goose*; *The Nursery Rhymes of England* (Halliwell); *A Book of Nonsense* and *More Nonsense* (Edward Lear)
-- **horror:** *Dracula* (Stoker); *Carmilla* (Le Fanu); *The Vampyre* (Polidori); *The Works of Edgar Allan Poe*, volumes 1 and 2; *Ghost Stories of an Antiquary* (M.R. James); *The Lady of the Barge* (W.W. Jacobs)
-- **bridge:** *Alice's Adventures in Wonderland* (Carroll); *Struwwelpeter*; *Cautionary Tales for Children* (Belloc); *Grimms' Fairy Tales*
-
-Notes on your own data:
-
-- Gutenberg header and footer text is removed automatically. Other plain text files work as they are.
-- The `rhymes` style keeps **verse only**. Prose paragraphs in that folder are dropped (see `VERSE_ONLY` in `clean_data.py`), so put prose in `horror` or `bridge`.
-- To use different style names, update `STYLES` in `clean_data.py`, `prepare_tokens.py` and `play.py`, `VERSE_ONLY` in `clean_data.py`, the `--blend-with` choices in `sample.py`, and the `"rhymes"` stream in `check_gpt.py`.
-
-### 3. Clean the corpus
+### 2. Clean and tokenize
 
 ```bash
 python3 clean_data.py
-```
-
-This strips boilerplate, illustration and footnote markers, headings, contents pages and indexes, normalizes characters, and splits the text into prose and verse units. Outputs go to `data/clean/`:
-
-- `units.jsonl`: one unit per line, with source, style, kind and text. This is the training input.
-- `<style>/<book>.txt`: readable cleaned copies.
-- `report.txt`: sizes, character vocabulary, and the first and last units of each book.
-
-Review `report.txt`. If a book still has front or back matter, add start or end phrases for it in `ANCHORS` at the top of `clean_data.py` and run the script again.
-
-### 4. Tokenize
-
-```bash
 python3 prepare_tokens.py
 ```
 
-This builds a character vocabulary from the cleaned text (the reference corpus produces 83 characters plus 4 special tokens), wraps each unit as `<|style|>text<|end|>`, and writes shuffled 90/10 train and validation splits to `data/tokens/` as `<style>_train.npy`, `<style>_val.npy`, and `tokenizer.json`.
+Review `data/clean/report.txt` for leftover front or back matter, and add cut points to `ANCHORS` in `clean_data.py` if needed.
 
-If you rebuild the data and the vocabulary size changes, checkpoints trained on the old vocabulary are no longer valid. `play.py` warns when this happens.
-
-### 5. Train the bigram baseline
+### 3. Train from scratch
 
 ```bash
 python3 train_bigram.py
-```
-
-Trains a next-character lookup table in under a minute. It sets the baseline loss that the GPT should beat. Output goes to `runs/bigram/`.
-
-### 6. Check the GPT
-
-```bash
 python3 check_gpt.py
+python3 train_gpt.py --styles rhymes horror bridge --style-weights 1 1 1 --steps 5000 --out runs/gpt-mix
 ```
 
-Verifies the parameter count, output shape, initial loss (about ln(vocab size)), the causal mask, and that the model can memorize a single batch. It also measures time per training step, which you can use to estimate training time. All checks should pass before a full run.
+`check_gpt.py` verifies the model and measures your training speed. Each run saves its best checkpoint, loss history and loss plot under `runs/`. For the larger 4.8M-parameter model, add `--n-embd 256 --n-layer 6 --n-head 8 --block-size 256 --dropout 0.2 --device cuda` on a GPU; `vamprhyme_colab.ipynb` runs it on Colab.
 
-### 7. Train the GPT on one style
-
-```bash
-python3 train_gpt.py --steps 5000 --out runs/gpt-5k
-```
-
-The default model has 4 layers, 4 heads, a 128-dimensional embedding, a 128-character context and dropout 0.1, about 0.8M parameters. Training uses AdamW with linear warmup, cosine learning rate decay and gradient clipping. The checkpoint with the lowest validation loss is saved as `model.pt`, along with `history.json` and `loss.png`.
-
-Run `python3 train_gpt.py --help` to see all options.
-
-### 8. Train on mixed styles
-
-```bash
-python3 train_gpt.py --styles rhymes horror bridge --style-weights 1 1 1 \
-    --steps 5000 --eval-iters 50 --out runs/gpt-mix
-```
-
-`--style-weights` sets each style's share of every batch, regardless of its size. Without it, styles are sampled in proportion to their size. Validation loss is reported for each style separately, and the best checkpoint is chosen by the weighted average.
-
-### 9. Generate text
-
-```bash
-python3 sample.py --checkpoint runs/gpt-mix/model.pt --prompt "<|horror|>" --temperature 0.8
-```
-
-To blend two styles, the prompt must start with a style tag:
+### 4. Generate and compare
 
 ```bash
 python3 sample.py --checkpoint runs/gpt-mix/model.pt \
-    --prompt "<|rhymes|>Twinkle, twinkle, little " \
-    --blend-with horror --blend-weight 0.6 --temperature 0.8
-```
-
-Blending runs the model with both style tags and mixes their next-character log-probabilities: weight 0 is the first style only, 1 is the second only, and values above 1 exaggerate the second.
-
-### 10. Train a larger model on a GPU
-
-```bash
-python3 train_gpt.py --styles rhymes horror bridge --style-weights 1 1 1 \
-    --n-embd 256 --n-layer 6 --n-head 8 --block-size 256 --dropout 0.2 \
-    --steps 5000 --eval-iters 50 --device cuda --out runs/gpt-mix-big
-```
-
-This configuration has about 4.8M parameters. `vamprhyme_colab.ipynb` runs it on a free Google Colab GPU. Because the data isn't in the repository, zip `data/tokens/` (`zip -r vamprhyme-tokens.zip data/tokens`) and upload it to Google Drive; the notebook unpacks it after cloning. See `colab.md` for the full setup. Checkpoints trained on a GPU load on a CPU without changes.
-
-### 11. Compare models
-
-```bash
-python3 compare_runs.py runs/gpt-5k runs/gpt-mix runs/gpt-mix-big
+    --prompt "<|rhymes|>Twinkle, twinkle, little " --blend-with horror --blend-weight 0.6
+python3 compare_runs.py runs/gpt-mix runs/gpt-mix-big
 python3 play.py
 ```
 
-`compare_runs.py` prints each run's best validation loss, overall and per style, and saves the curves side by side to `runs/compare.png`. `play.py` loads every checkpoint in `runs/` and sends each prompt to all of them. Type `/help` inside it for the available commands.
+### 5. Fine-tune a pretrained model
 
-## Reference results
+Build the datasets locally:
 
-Validation loss (cross-entropy, lower is better) on the reference corpus:
+```bash
+python3 finetune_data.py
+python3 select_rhymes.py
+python3 draft_pairs.py --list-free                    # free models on OpenRouter
+python3 draft_pairs.py --model MODEL_ID --batch 10    # needs OPENROUTER_API_KEY
+python3 build_pair_data.py
+```
+
+Review `data/pairs/drafts.txt` before building: fix weak parodies, delete bad ones. `draft_pairs.py --prompts-only` writes prompts to paste into a chat instead of calling an API.
+
+Then train on a GPU, with `vamprhyme_finetune_colab.ipynb` (style examples only) or `vamprhyme_pairs_colab.ipynb` (pairs), or directly:
+
+```bash
+python3 finetune_lora.py --data data/sft-pairs --epochs 1 --out runs/lora-pairs
+python3 chat.py --adapter runs/lora-pairs/adapter --compare
+```
+
+### 6. Publish
+Published on Huggingface: `https://huggingface.co/spaces/trajrealm/vamprhyme-demo`
+
+
+## Results
+
+**From scratch** (validation loss per character; an untrained model starts at 4.47):
 
 | Run | Parameters | Training | Rhymes | Horror | Bridge |
 |---|---|---|---|---|---|
@@ -188,10 +147,23 @@ Validation loss (cross-entropy, lower is better) on the reference corpus:
 | `gpt-mix` | 0.8M | 3 styles, balanced, CPU | 1.411 | 1.470 | 1.269 |
 | `gpt-mix-big` | 4.8M | 3 styles, balanced, T4 GPU | 1.202 | 1.328 | 1.114 |
 
-All runs used 5,000 steps. An untrained model starts at about 4.47 (uniform over 87 tokens).
+**Fine-tuned** `Qwen2.5-1.5B-Instruct` with LoRA on pairs (validation loss per token):
+
+| | Base model | Fine-tuned |
+|---|---|---|
+| Rhyme pairs | 1.989 | 1.418 |
+| Nursery rhymes | 3.260 | 2.685 |
+| Gothic horror | 3.447 | 3.061 |
+| Children's dark fiction | 3.011 | 2.561 |
+
+Per-character and per-token losses aren't directly comparable: a token averages about four characters.
 
 ## Limitations
 
-- **Character-level and small.** The models learn spelling, punctuation, line structure and style vocabulary, but produce little coherent meaning and rarely rhyme. Meaning requires far more training text than a few megabytes.
-- **Base models.** They continue text and don't follow instructions. Prompt with the beginning of the text you want (`There was an old woman who`), not a request (`write a poem`).
-- **Fixed vocabulary.** Prompts can only contain characters that appear in the training data.
+- The fine-tuned model often breaks the original's rhyme when substituting dark words, and overuses a few motifs, such as "pale stranger".
+- Requests that name a rhyme without quoting it work only for very famous rhymes.
+- The from-scratch models are base models: they continue text rather than follow instructions, and produce surface style without coherent meaning.
+
+## Data and licensing
+
+The source texts are public domain in the United States and aren't included here; check their status in your own country, and follow Project Gutenberg's terms when downloading. The adapter follows the base model's Apache 2.0 license. If you draft pairs with a third-party model, check its terms on using outputs for training.

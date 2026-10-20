@@ -12,7 +12,7 @@ from finetune_data import SYSTEM_PROMPT
 DEFAULT_MODEL = "Qwen/Qwen2.5-1.5B-Instruct"
 
 
-def load(base: str | None, adapter: Path | None, device: str):
+def load(base: str | None, adapter: str | None, device: str):
     base = base or (PeftConfig.from_pretrained(adapter).base_model_name_or_path if adapter else DEFAULT_MODEL)
     dtype = torch.float16 if device == "cuda" else torch.float32
     tokenizer = AutoTokenizer.from_pretrained(base)
@@ -75,7 +75,7 @@ if __name__ == "__main__":
     parser.add_argument("prompts", nargs="*", help="prompts to answer; omit for an interactive session")
     parser.add_argument("--prompts-file", type=Path, help='JSONL file with a "prompt" field per line')
     parser.add_argument("--base", help=f"base model; defaults to the adapter's base or {DEFAULT_MODEL}")
-    parser.add_argument("--adapter", type=Path, help="LoRA adapter folder from finetune_lora.py")
+    parser.add_argument("--adapter", help="LoRA adapter: a local folder or a Hugging Face repository ID")
     parser.add_argument("--compare", action="store_true", help="also answer with the adapter switched off")
     parser.add_argument("--system", default=SYSTEM_PROMPT,
                         help="system prompt; pass an empty string for the model's own default")
